@@ -218,10 +218,8 @@ fn flocking_dv(
         if let Some(c_world) = camera.viewport_to_world_2d(t_camera, c_window) {
             let to_cursor = c_world - t0.translation.xy();
             dv += to_cursor * BOID_MOUSE_CHASE_FACTOR;
-        } else {
-        };
-    } else {
-    };
+        }
+    }
 
     dv
 }
