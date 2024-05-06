@@ -180,12 +180,17 @@ fn flocking_dv(
             continue;
         }
 
+        let vec_to = t1.translation.xy() - t0.translation.xy();
+
         // Don't evaluate boids behind
-        if angle_towards(t0.translation.xy(), t1.translation.xy()) > BOID_FOV {
-            continue;
+        if let Some(vec_to_norm) = vec_to.try_normalize() {
+            let quat_to = Quat::from_rotation_arc_2d(Vec2::X, vec_to_norm);
+            let angle = t0.rotation.angle_between(quat_to);
+            if angle > BOID_FOV {
+                continue;
+            }
         }
 
-        let vec_to = (t1.translation - t0.translation).xy();
         let dist_sq = vec_to.x * vec_to.x + vec_to.y * vec_to.y;
 
         if dist_sq < PROT_RANGE_SQ {
