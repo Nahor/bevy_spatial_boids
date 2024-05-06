@@ -15,6 +15,7 @@ const BOID_BOUNDS: Vec2 = Vec2::new(WINDOW_BOUNDS.x * 2. / 3., WINDOW_BOUNDS.y *
 const BOID_COUNT: i32 = 500;
 const BOID_SIZE: f32 = 5.;
 const BOID_VIS_RANGE: f32 = 40.;
+const BOID_VIS_COUNT: usize = 50;
 const BOID_PROT_RANGE: f32 = 8.;
 // https://en.wikipedia.org/wiki/Bird_vision#Extraocular_anatomy
 const BOID_FOV: f32 = 120. * std::f32::consts::PI / 180.;
@@ -163,7 +164,8 @@ fn flocking_dv(
     let mut neighboring_boids = 0;
     let mut close_boids = 0;
 
-    for (_, entity) in kdtree.within_distance(t0.translation.xy(), BOID_VIS_RANGE) {
+    let t0_translation = t0.translation.xy();
+    for (_, entity) in kdtree.k_nearest_neighbour(t0_translation, BOID_VIS_COUNT) {
         let Ok((other, v1, t1)) = boid_query.get(entity.unwrap()) else {
             todo!()
         };
@@ -173,7 +175,11 @@ fn flocking_dv(
             continue;
         }
 
-        let vec_to = t1.translation.xy() - t0.translation.xy();
+        let vec_to = t1.translation.xy() - t0_translation;
+        let dist_sq = vec_to.length_squared();
+        if dist_sq > BOID_VIS_RANGE * BOID_VIS_RANGE {
+            continue;
+        }
 
         // Don't evaluate boids behind
         if let Some(vec_to_norm) = vec_to.try_normalize() {
@@ -183,8 +189,6 @@ fn flocking_dv(
                 continue;
             }
         }
-
-        let dist_sq = vec_to.length_squared();
 
         if dist_sq < PROT_RANGE_SQ {
             // separation
@@ -214,7 +218,7 @@ fn flocking_dv(
     let (camera, t_camera) = camera.single();
     if let Some(c_window) = window.single().cursor_position() {
         if let Some(c_world) = camera.viewport_to_world_2d(t_camera, c_window) {
-            let to_cursor = c_world - t0.translation.xy();
+            let to_cursor = c_world - t0_translation;
             dv += to_cursor * BOID_MOUSE_CHASE_FACTOR;
         }
     }
