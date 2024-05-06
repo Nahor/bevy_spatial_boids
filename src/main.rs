@@ -15,7 +15,8 @@ const BOID_BOUNDS: Vec2 = Vec2::new(WINDOW_BOUNDS.x * 2. / 3., WINDOW_BOUNDS.y *
 const BOID_COUNT: i32 = 500;
 const BOID_SIZE: f32 = 5.;
 const BOID_VIS_RANGE: f32 = 40.;
-const BOID_VIS_COUNT: usize = 50;
+const BOID_VIS_COUNT_MAX: usize = 50;
+const BOID_VIS_COUNT_MIN: usize = 10;
 const BOID_PROT_RANGE: f32 = 8.;
 // https://en.wikipedia.org/wiki/Bird_vision#Extraocular_anatomy
 const BOID_FOV: f32 = 120. * std::f32::consts::PI / 180.;
@@ -27,6 +28,8 @@ const BOID_TURN_FACTOR: f32 = 0.2;
 const BOID_MOUSE_CHASE_FACTOR: f32 = 0.0005;
 const BOID_MIN_SPEED: f32 = 2.0;
 const BOID_MAX_SPEED: f32 = 4.0;
+const BOID_UPDATE_FREQ: f32 = 60.0;
+const BOID_UPDATE_DURATION: f32 = 1. / BOID_UPDATE_FREQ / 2.; // Allocate half of the target framerate towards updating the boids
 
 fn main() {
     App::new()
@@ -42,9 +45,9 @@ fn main() {
             AutomaticUpdate::<SpatialEntity>::new()
                 // TODO: check perf of other tree types
                 .with_spatial_ds(SpatialStructure::KDTree2)
-                .with_frequency(Duration::from_millis(16)),
+                .with_frequency(Duration::from_millis((1000. / BOID_UPDATE_FREQ) as u64)),
         ))
-        .insert_resource(Time::<Fixed>::from_hz(60.0))
+        .insert_resource(Time::<Fixed>::from_hz(BOID_UPDATE_FREQ as f64))
         .add_event::<DvEvent>()
         .add_systems(Startup, setup)
         .add_systems(
@@ -155,6 +158,7 @@ fn flocking_dv(
     window: &Query<&Window>,
     boid: &Entity,
     t0: &&Transform,
+    neighbor_count: usize,
 ) -> Vec2 {
     // https://vanhunteradams.com/Pico/Animal_Movement/Boids-algorithm.html
     let mut dv = Vec2::default();
@@ -165,7 +169,7 @@ fn flocking_dv(
     let mut close_boids = 0;
 
     let t0_translation = t0.translation.xy();
-    for (_, entity) in kdtree.k_nearest_neighbour(t0_translation, BOID_VIS_COUNT) {
+    for (_, entity) in kdtree.k_nearest_neighbour(t0_translation, neighbor_count) {
         let Ok((other, v1, t1)) = boid_query.get(entity.unwrap()) else {
             todo!()
         };
@@ -229,14 +233,22 @@ fn flocking_dv(
 fn flocking_system(
     boid_query: Query<(Entity, &Velocity, &Transform), With<SpatialEntity>>,
     kdtree: Res<KDTree2<SpatialEntity>>,
+    mut neighbor_count: Local<usize>,
     mut dv_event_writer: EventWriter<DvEvent>,
     camera: Query<(&Camera, &GlobalTransform)>,
     window: Query<&Window>,
 ) {
     let pool = ComputeTaskPool::get();
     let boids = boid_query.iter().collect::<Vec<_>>();
-    let boids_per_thread = (boids.len() + pool.thread_num() - 1) / pool.thread_num();
+    let boids_per_thread = boids.len().div_ceil(4 * pool.thread_num());
 
+    let mut max_neighbor = *neighbor_count;
+    if max_neighbor == 0 {
+        // Not yet initialized
+        max_neighbor = (BOID_VIS_COUNT_MIN + BOID_VIS_COUNT_MAX) / 2;
+    }
+
+    let update_start = std::time::Instant::now();
     // https://docs.rs/bevy/latest/bevy/tasks/struct.ComputeTaskPool.html
     for batch in pool.scope(|s| {
         for chunk in boids.chunks(boids_per_thread) {
@@ -251,7 +263,7 @@ fn flocking_system(
                 for (boid, _, t0) in chunk {
                     dv_batch.push(DvEvent(
                         *boid,
-                        flocking_dv(kdtree, boid_query, camera, window, boid, t0),
+                        flocking_dv(kdtree, boid_query, camera, window, boid, t0, max_neighbor),
                     ));
                 }
 
@@ -260,6 +272,25 @@ fn flocking_system(
         }
     }) {
         dv_event_writer.send_batch(batch);
+    }
+
+    let update_end = std::time::Instant::now();
+    if (max_neighbor > BOID_VIS_COUNT_MIN)
+        && (update_end - update_start).as_secs_f32() > BOID_UPDATE_DURATION * 1.1
+    {
+        *neighbor_count = (max_neighbor * 9 / 10).max(BOID_VIS_COUNT_MIN);
+        println!(
+            "Reducing neighbors from {max_neighbor} to {}",
+            *neighbor_count
+        );
+    } else if (max_neighbor < BOID_VIS_COUNT_MAX)
+        && ((update_end - update_start).as_secs_f32() < BOID_UPDATE_DURATION * 0.9)
+    {
+        *neighbor_count = (max_neighbor * 11 / 10).min(BOID_VIS_COUNT_MAX);
+        println!(
+            "Increasing neighbors from {max_neighbor} to {}",
+            *neighbor_count
+        );
     }
 }
 
