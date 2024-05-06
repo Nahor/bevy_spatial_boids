@@ -92,7 +92,7 @@ fn setup(
     // Halton sequence for Boid spawns
     let seq = halton::Sequence::new(2)
         .zip(Sequence::new(3))
-        .zip(1..BOID_COUNT);
+        .zip(0..BOID_COUNT);
 
     for ((x, y), _) in seq {
         let spawn_x = (x as f32 * WINDOW_BOUNDS.x) - WINDOW_BOUNDS.x / 2.0;
