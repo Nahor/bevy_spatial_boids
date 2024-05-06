@@ -50,10 +50,8 @@ fn main() {
         .insert_resource(Time::<Fixed>::from_hz(BOID_UPDATE_FREQ as f64))
         .add_event::<DvEvent>()
         .add_systems(Startup, setup)
-        .add_systems(
-            FixedUpdate,
-            (flocking_system, velocity_system, movement_system).chain(),
-        )
+        .add_systems(FixedUpdate, (flocking_system, velocity_system).chain())
+        .add_systems(Update, movement_system)
         .add_systems(Update, (draw_boid_gizmos, bevy::window::close_on_esc))
         .run();
 }
@@ -328,12 +326,18 @@ fn velocity_system(
     }
 }
 
-fn movement_system(mut query: Query<(&mut Velocity, &mut Transform)>) {
+fn movement_system(mut query: Query<(&mut Velocity, &mut Transform)>, time: Res<Time>) {
     for (velocity, mut transform) in query.iter_mut() {
         if let Some(velocity_norm) = velocity.0.try_normalize() {
             transform.rotation = Quat::from_rotation_arc_2d(Vec2::X, velocity_norm);
         }
-        transform.translation.x += velocity.0.x;
-        transform.translation.y += velocity.0.y;
+        // The velocity is computed for the fixed update, so we need to scale
+        // the variable update to match, capped to avoid moving more than what
+        // the algorithm expected (low FPS)
+        // In other words, smooth the movement at high FPS without messing it
+        // at low FPS.
+        let time_delta = (time.delta_seconds() * BOID_UPDATE_FREQ).min(1.0);
+        transform.translation.x += velocity.0.x * time_delta;
+        transform.translation.y += velocity.0.y * time_delta;
     }
 }
