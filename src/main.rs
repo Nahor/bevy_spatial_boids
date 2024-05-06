@@ -143,13 +143,6 @@ fn setup(
     }
 }
 
-fn angle_towards(a: Vec2, b: Vec2) -> f32 {
-    // https://stackoverflow.com/a/68929139
-    let dir = b - a;
-    let angle = dir.y.atan2(dir.x);
-    angle
-}
-
 fn draw_boid_gizmos(mut gizmos: Gizmos) {
     gizmos.rect_2d(Vec2::ZERO, 0.0, BOID_BOUNDS, Color::GRAY);
 }
@@ -191,7 +184,7 @@ fn flocking_dv(
             }
         }
 
-        let dist_sq = vec_to.x * vec_to.x + vec_to.y * vec_to.y;
+        let dist_sq = vec_to.length_squared();
 
         if dist_sq < PROT_RANGE_SQ {
             // separation
@@ -296,20 +289,15 @@ fn velocity_system(
         }
 
         // Clamp speed
-        let speed = velocity.0.length();
-
-        if speed < BOID_MIN_SPEED {
-            velocity.0 *= BOID_MIN_SPEED / speed;
-        }
-        if speed > BOID_MAX_SPEED {
-            velocity.0 *= BOID_MAX_SPEED / speed;
-        }
+        velocity.0 = velocity.0.clamp_length(BOID_MIN_SPEED, BOID_MAX_SPEED);
     }
 }
 
 fn movement_system(mut query: Query<(&mut Velocity, &mut Transform)>) {
     for (velocity, mut transform) in query.iter_mut() {
-        transform.rotation = Quat::from_axis_angle(Vec3::Z, angle_towards(Vec2::ZERO, velocity.0));
+        if let Some(velocity_norm) = velocity.0.try_normalize() {
+            transform.rotation = Quat::from_rotation_arc_2d(Vec2::X, velocity_norm);
+        }
         transform.translation.x += velocity.0.x;
         transform.translation.y += velocity.0.y;
     }
