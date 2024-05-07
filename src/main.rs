@@ -119,11 +119,11 @@ fn setup(
         .zip(Sequence::new(3))
         .zip(0..BOID_COUNT);
 
-    for ((x, y), _) in seq {
+    for ((x, y), z) in seq {
         let spawn = Vec2::new(x as f32, y as f32) * bounds.0 - bounds.0 / 2.0;
 
-        let mut transform =
-            Transform::from_translation(spawn.extend(0.0)).with_scale(Vec3::splat(BOID_SIZE));
+        let mut transform = Transform::from_translation(spawn.extend(z as f32 / BOID_COUNT as f32))
+            .with_scale(Vec3::splat(BOID_SIZE));
 
         transform.rotate_z(0.0);
 
