@@ -1,0 +1,16 @@
+{
+    "version": "0.2",
+    "ignorePaths": [],
+    "dictionaryDefinitions": [],
+    "dictionaries": [],
+    "words": [
+        "boid",
+        "boids",
+        "consts",
+        "Halton",
+        "kdtree",
+        "neighbour"
+    ],
+    "ignoreWords": [],
+    "import": []
+}
