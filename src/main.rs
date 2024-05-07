@@ -4,6 +4,7 @@ use bevy::{
     render::{mesh::*, render_asset::RenderAssetUsages},
     sprite::{MaterialMesh2dBundle, Mesh2dHandle},
     tasks::ComputeTaskPool,
+    window::{PrimaryWindow, WindowResized},
 };
 use bevy_spatial::{kdtree::KDTree2, AutomaticUpdate, SpatialAccess, SpatialStructure};
 use halton::Sequence;
@@ -48,11 +49,13 @@ fn main() {
                 .with_frequency(Duration::from_millis((1000. / BOID_UPDATE_FREQ) as u64)),
         ))
         .insert_resource(Time::<Fixed>::from_hz(BOID_UPDATE_FREQ as f64))
+        .insert_resource(Bounds(boid_bounds(WINDOW_BOUNDS)))
         .add_event::<DvEvent>()
         .add_systems(Startup, setup)
         .add_systems(FixedUpdate, (flocking_system, velocity_system).chain())
         .add_systems(Update, movement_system)
         .add_systems(Update, (draw_boid_gizmos, bevy::window::close_on_esc))
+        .add_systems(Update, update_bounds.run_if(on_event::<WindowResized>()))
         .run();
 }
 
@@ -82,10 +85,30 @@ impl Default for BoidBundle {
 #[derive(Event)]
 struct DvEvent(Entity, Vec2);
 
+#[derive(Resource, Debug)]
+struct Bounds(Vec2);
+
+fn boid_bounds(window_size: Vec2) -> Vec2 {
+    let f = |x: f32| x / (x + 1.0).ln();
+    Vec2::new(
+        window_size.x - f(window_size.x),
+        window_size.y - f(window_size.y),
+    )
+}
+
+fn update_bounds(windows: Query<&Window, With<PrimaryWindow>>, mut bounds: ResMut<Bounds>) {
+    let Ok(window) = windows.get_single() else {
+        return;
+    };
+
+    bounds.0 = boid_bounds(Vec2::new(window.width(), window.height()));
+}
+
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    bounds: Res<Bounds>,
 ) {
     commands.spawn(Camera2dBundle::default());
 
@@ -97,11 +120,10 @@ fn setup(
         .zip(0..BOID_COUNT);
 
     for ((x, y), _) in seq {
-        let spawn_x = (x as f32 * WINDOW_BOUNDS.x) - WINDOW_BOUNDS.x / 2.0;
-        let spawn_y = (y as f32 * WINDOW_BOUNDS.y) - WINDOW_BOUNDS.y / 2.0;
+        let spawn = Vec2::new(x as f32, y as f32) * bounds.0 - bounds.0 / 2.0;
 
         let mut transform =
-            Transform::from_xyz(spawn_x, spawn_y, 0.0).with_scale(Vec3::splat(BOID_SIZE));
+            Transform::from_translation(spawn.extend(0.0)).with_scale(Vec3::splat(BOID_SIZE));
 
         transform.rotate_z(0.0);
 
@@ -145,8 +167,8 @@ fn setup(
     }
 }
 
-fn draw_boid_gizmos(mut gizmos: Gizmos) {
-    gizmos.rect_2d(Vec2::ZERO, 0.0, BOID_BOUNDS, Color::GRAY);
+fn draw_boid_gizmos(mut gizmos: Gizmos, bounds: Res<Bounds>) {
+    gizmos.rect_2d(Vec2::ZERO, 0.0, bounds.0, Color::GRAY);
 }
 
 fn flocking_dv(
@@ -295,6 +317,7 @@ fn flocking_system(
 fn velocity_system(
     mut events: EventReader<DvEvent>,
     mut boids: Query<(&mut Velocity, &mut Transform)>,
+    bounds: Res<Bounds>,
 ) {
     for DvEvent(boid, dv) in events.read() {
         let Ok((mut velocity, transform)) = boids.get_mut(*boid) else {
@@ -304,8 +327,7 @@ fn velocity_system(
         velocity.0.x += dv.x;
         velocity.0.y += dv.y;
 
-        let width = BOID_BOUNDS.x / 2.;
-        let height = BOID_BOUNDS.y / 2.;
+        let (width, height) = (bounds.0 / 2.).into();
 
         // Steer back into visible region
         if transform.translation.x < -width {
