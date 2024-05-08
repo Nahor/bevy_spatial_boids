@@ -319,32 +319,21 @@ fn velocity_system(
     mut boids: Query<(&mut Velocity, &mut Transform)>,
     bounds: Res<Bounds>,
 ) {
+    let half_bound = bounds.0 / 2.;
+
     for DvEvent(boid, dv) in events.read() {
         let Ok((mut velocity, transform)) = boids.get_mut(*boid) else {
             todo!()
         };
 
-        velocity.0.x += dv.x;
-        velocity.0.y += dv.y;
+        velocity.0 += *dv;
 
-        let (width, height) = (bounds.0 / 2.).into();
+        let top_left_mask = transform.translation.xy().cmplt(-half_bound);
+        let bottom_right_mask = transform.translation.xy().cmpgt(half_bound);
 
-        // Steer back into visible region
-        if transform.translation.x < -width {
-            velocity.0.x += BOID_TURN_FACTOR;
-        }
-        if transform.translation.x > width {
-            velocity.0.x -= BOID_TURN_FACTOR;
-        }
-        if transform.translation.y < -height {
-            velocity.0.y += BOID_TURN_FACTOR;
-        }
-        if transform.translation.y > height {
-            velocity.0.y -= BOID_TURN_FACTOR;
-        }
-
-        // Clamp speed
-        velocity.0 = velocity.0.clamp_length(BOID_MIN_SPEED, BOID_MAX_SPEED);
+        let turn_factor = Vec2::select(top_left_mask, Vec2::splat(BOID_TURN_FACTOR), Vec2::ZERO)
+            - Vec2::select(bottom_right_mask, Vec2::splat(BOID_TURN_FACTOR), Vec2::ZERO);
+        velocity.0 = (velocity.0 + turn_factor).clamp_length(BOID_MIN_SPEED, BOID_MAX_SPEED);
     }
 }
 
