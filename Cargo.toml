@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 bevy = "0.13.0"
 halton = "0.2.1"
-kiddo = { version = "4.2.0" }
+kd-tree = { version = "0.6.0", features = ["rayon"] }
 rand = "0.9.0-alpha.1"
 
 [profile.dev]

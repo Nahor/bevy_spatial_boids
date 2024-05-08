@@ -6,14 +6,16 @@
     "words": [
         "boid",
         "boids",
-        "cmpgt",
-        "cmplt",
-        "consts",
         "Halton",
-        "kdtree"
+        "kdtree",
+        "nearests"
     ],
     "ignoreWords": [
-        "neighbour"
+        "consts",
+        "cmpgt",
+        "cmplt",
+        "hashbrown",
+        "length_recip"
     ],
     "import": []
 }

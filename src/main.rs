@@ -9,8 +9,9 @@ use bevy::{
     utils::hashbrown::HashMap,
     window::{PrimaryWindow, WindowResized},
 };
+use bevy_spatial_boids::range_chunks::RangeChunk;
 use halton::Sequence;
-use kiddo::{float::kdtree::KdTree, NearestNeighbour, SquaredEuclidean};
+use kd_tree::{ItemAndDistance, KdMap};
 use rand::prelude::*;
 use std::{
     sync::{Arc, RwLock},
@@ -18,8 +19,7 @@ use std::{
 };
 
 const WINDOW_BOUNDS: Vec2 = Vec2::new(400., 400.);
-const BOID_BOUNDS: Vec2 = Vec2::new(WINDOW_BOUNDS.x * 2. / 3., WINDOW_BOUNDS.y * 2. / 3.);
-const BOID_COUNT: i32 = 500;
+const BOID_COUNT: usize = 500;
 const BOID_SIZE: f32 = 5.;
 const BOID_VIS_RANGE: f32 = 40.;
 const BOID_VIS_COUNT: usize = 100;
@@ -81,7 +81,7 @@ fn main() {
 #[derive(Component, Default)]
 struct SpatialEntity;
 
-#[derive(Component, Clone, Copy)]
+#[derive(Component, Clone, Copy, Default)]
 struct Velocity(Vec2);
 
 #[derive(Bundle)]
@@ -106,7 +106,7 @@ struct DvEvent(Entity, Vec2);
 #[derive(Resource, Debug)]
 struct Bounds(Vec2);
 
-type BoidSpatialTree = KdTree<f32, u64, 2, 32, u32>;
+type BoidSpatialTree = KdMap<[f32; 2], u64>;
 
 #[derive(Resource)]
 struct SpatialKiddo {
@@ -117,7 +117,7 @@ struct SpatialKiddo {
 impl Default for SpatialKiddo {
     fn default() -> Self {
         Self {
-            tree: Arc::new(RwLock::new(BoidSpatialTree::with_capacity(BOID_COUNT))),
+            tree: Arc::new(RwLock::new(BoidSpatialTree::default())),
             task: None,
             stopwatch: Stopwatch::new(),
         }
@@ -208,11 +208,11 @@ fn draw_boid_gizmos(mut gizmos: Gizmos, bounds: Res<Bounds>) {
 }
 
 fn flocking_dv(
+    idx: usize,
     kdtree: &Arc<RwLock<BoidSpatialTree>>,
-    boids: &Arc<HashMap<Entity, (Velocity, Transform)>>,
-    boid: Entity,
+    boids: &Arc<HashMap<Entity, Velocity>>,
     cursor: Option<Vec2>,
-) -> Vec2 {
+) -> Option<(Entity, Vec2)> {
     // https://vanhunteradams.com/Pico/Animal_Movement/Boids-algorithm.html
     let mut dv = Vec2::default();
     let mut vec_away = Vec2::default();
@@ -222,19 +222,17 @@ fn flocking_dv(
     let mut close_boids = 0;
 
     let kdtree = kdtree.read().unwrap();
+    let &(t0_array, boid_bits) = kdtree.get(idx)?;
+    let boid = Entity::from_bits(boid_bits);
+    let t0 = Vec2::from(t0_array);
+    let v0 = boids.get(&boid).copied().unwrap_or_default();
 
-    let Some(t0) = boids.get(&boid).map(|boid| boid.1) else {
-        return Vec2::ZERO;
-    };
-
-    let t0_translation = t0.translation.xy();
-    let neighbors = kdtree.nearest_n_within::<SquaredEuclidean>(
-        &t0_translation.to_array(),
-        BOID_VIS_RANGE * BOID_VIS_RANGE,
-        BOID_VIS_COUNT,
-        true, // In Kiddo 4.2.0, when unsorted, it behaves the same as `within_unsorted`
-    );
-    for NearestNeighbour { item, .. } in neighbors.into_iter() {
+    let neighbors = kdtree.nearests(&t0_array, BOID_VIS_COUNT);
+    for ItemAndDistance {
+        item: &(t1, item),
+        squared_distance: dist_sq,
+    } in neighbors.into_iter()
+    {
         let other = Entity::from_bits(item);
 
         // Don't evaluate against itself
@@ -242,23 +240,18 @@ fn flocking_dv(
             continue;
         }
 
-        let Some((v1, t1)) = boids.get(&other) else {
-            todo!()
-        };
-
-        let vec_to = t1.translation.xy() - t0_translation;
-
-        // // Don't evaluate boids behind
-        let vec_to_norm_opt = vec_to.try_normalize();
-        if let Some(vec_to_norm) = vec_to_norm_opt {
-            let quat_to = Quat::from_rotation_arc_2d(Vec2::X, vec_to_norm);
-            let angle = t0.rotation.angle_between(quat_to);
-            if angle > BOID_FOV {
-                continue;
-            }
+        if dist_sq > BOID_VIS_RANGE * BOID_VIS_RANGE {
+            continue;
         }
 
-        let dist_sq = vec_to.length_squared();
+        let vec_to = Vec2::from(t1) - t0;
+
+        // Don't evaluate boids behind
+        let angle = (v0.0.dot(vec_to) * v0.0.length_recip() * vec_to.length_recip()).acos();
+        if angle > BOID_FOV {
+            continue;
+        }
+
         if dist_sq < BOID_PROT_RANGE_SQ {
             // separation
             vec_away -= vec_to;
@@ -267,6 +260,7 @@ fn flocking_dv(
             // cohesion
             avg_position += vec_to;
             // alignment
+            let v1 = boids.get(&other).copied().unwrap_or_default();
             avg_velocity += v1.0;
             neighboring_boids += 1;
         }
@@ -285,11 +279,11 @@ fn flocking_dv(
 
     // Chase the mouse
     if let Some(cursor) = cursor {
-        let to_cursor = cursor - t0_translation;
+        let to_cursor = cursor - t0;
         dv += to_cursor * BOID_MOUSE_CHASE_FACTOR;
     }
 
-    dv
+    Some((boid, dv))
 }
 
 fn flocking_system(
@@ -326,14 +320,14 @@ fn flocking_system(
         new_elapsed = Duration::ZERO
     }
     spatial.stopwatch.set_elapsed(new_elapsed);
+
     let pool = AsyncComputeTaskPool::get();
     let boids = Arc::new(
         boid_query
             .iter()
-            .map(|query_data| (query_data.0, (*query_data.1, *query_data.2)))
+            .map(|query_data| (query_data.0, *query_data.1))
             .collect::<HashMap<_, _>>(),
     );
-    let entities = boids.keys().copied().collect::<Vec<_>>();
     let boids_per_thread = boids.len().div_ceil(pool.thread_num());
 
     let cursor = {
@@ -344,20 +338,21 @@ fn flocking_system(
             .and_then(|cursor| camera.viewport_to_world_2d(transform, cursor))
     };
 
-    let tasks = entities
+    let tasks = (0..boids.len())
         .chunks(boids_per_thread)
         .enumerate()
         .map(|(_id, chunk)| {
             let boids = Arc::clone(&boids);
             let kdtree = Arc::clone(&spatial.tree);
 
-            let chunk = Vec::from(chunk);
-
             pool.spawn(async move {
                 let mut dv_batch: Vec<DvEvent> = vec![];
 
-                for boid in chunk.into_iter() {
-                    dv_batch.push(DvEvent(boid, flocking_dv(&kdtree, &boids, boid, cursor)));
+                for idx in chunk {
+                    let Some((boid, dv)) = flocking_dv(idx, &kdtree, &boids, cursor) else {
+                        continue;
+                    };
+                    dv_batch.push(DvEvent(boid, dv));
                 }
 
                 dv_batch
@@ -441,11 +436,12 @@ fn update_spatial(
 
     let mut kdtree = tree.tree.write().unwrap();
 
-    // It's faster to recreate the tree than to update (I measured ~0.4ms vs ~1.6ms)
-    *kdtree = Default::default();
-    for (entity, transform) in entities.iter() {
-        kdtree.add(&transform.translation.xy().to_array(), entity.to_bits());
-    }
+    *kdtree = BoidSpatialTree::build_by_ordered_float(
+        entities
+            .iter()
+            .map(|(entity, transform)| (transform.translation.xy().to_array(), entity.to_bits()))
+            .collect::<Vec<_>>(),
+    );
 
     let e = std::time::Instant::now();
     update.1 += e - s;
