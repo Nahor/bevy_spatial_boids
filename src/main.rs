@@ -174,11 +174,10 @@ fn draw_boid_gizmos(mut gizmos: Gizmos, bounds: Res<Bounds>) {
 fn flocking_dv(
     kdtree: &Res<KDTree2<SpatialEntity>>,
     boid_query: &Query<(Entity, &Velocity, &Transform), With<SpatialEntity>>,
-    camera: &Query<(&Camera, &GlobalTransform)>,
-    window: &Query<&Window>,
     boid: &Entity,
     t0: &&Transform,
     neighbor_count: usize,
+    cursor: Option<Vec2>,
 ) -> Vec2 {
     // https://vanhunteradams.com/Pico/Animal_Movement/Boids-algorithm.html
     let mut dv = Vec2::default();
@@ -239,12 +238,9 @@ fn flocking_dv(
     }
 
     // Chase the mouse
-    let (camera, t_camera) = camera.single();
-    if let Some(c_window) = window.single().cursor_position() {
-        if let Some(c_world) = camera.viewport_to_world_2d(t_camera, c_window) {
-            let to_cursor = c_world - t0_translation;
-            dv += to_cursor * BOID_MOUSE_CHASE_FACTOR;
-        }
+    if let Some(cursor) = cursor {
+        let to_cursor = cursor - t0_translation;
+        dv += to_cursor * BOID_MOUSE_CHASE_FACTOR;
     }
 
     dv
@@ -267,6 +263,14 @@ fn flocking_system(
         // Not yet initialized
         max_neighbor = (BOID_VIS_COUNT_MIN + BOID_VIS_COUNT_MAX) / 2;
     }
+    
+    let cursor = {
+        let (camera, transform) = camera.single();
+        window
+            .single()
+            .cursor_position()
+            .and_then(|cursor| camera.viewport_to_world_2d(transform, cursor))
+    };
 
     let update_start = std::time::Instant::now();
     // https://docs.rs/bevy/latest/bevy/tasks/struct.ComputeTaskPool.html
