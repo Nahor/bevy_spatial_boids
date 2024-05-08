@@ -341,7 +341,7 @@ fn velocity_system(
     }
 }
 
-fn movement_system(mut query: Query<(&mut Velocity, &mut Transform)>, time: Res<Time>) {
+fn movement_system(mut query: Query<(&Velocity, &mut Transform)>, time: Res<Time>) {
     for (velocity, mut transform) in query.iter_mut() {
         if let Some(velocity_norm) = velocity.0.try_normalize() {
             transform.rotation = Quat::from_rotation_arc_2d(Vec2::X, velocity_norm);
