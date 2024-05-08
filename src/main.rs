@@ -21,7 +21,7 @@ const BOID_VIS_COUNT_MIN: usize = 10;
 const BOID_PROT_RANGE: f32 = 8.;
 // https://en.wikipedia.org/wiki/Bird_vision#Extraocular_anatomy
 const BOID_FOV: f32 = 120. * std::f32::consts::PI / 180.;
-const PROT_RANGE_SQ: f32 = BOID_PROT_RANGE * BOID_PROT_RANGE;
+const BOID_PROT_RANGE_SQ: f32 = BOID_PROT_RANGE * BOID_PROT_RANGE;
 const BOID_CENTER_FACTOR: f32 = 0.0005;
 const BOID_MATCHING_FACTOR: f32 = 0.05;
 const BOID_AVOID_FACTOR: f32 = 0.05;
@@ -214,7 +214,7 @@ fn flocking_dv(
             }
         }
 
-        if dist_sq < PROT_RANGE_SQ {
+        if dist_sq < BOID_PROT_RANGE_SQ {
             // separation
             vec_away -= vec_to;
             close_boids += 1;
