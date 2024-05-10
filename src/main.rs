@@ -13,7 +13,7 @@ use halton::Sequence;
 use kd_tree::{ItemAndDistance, KdMap};
 use rand::prelude::*;
 use std::{
-    sync::{Arc, RwLock},
+    sync::{Arc, OnceLock, RwLock},
     time::Duration,
 };
 
@@ -34,9 +34,18 @@ const BOID_MOUSE_CHASE_FACTOR: f32 = 0.0005;
 const BOID_MIN_SPEED: f32 = 2.0;
 const BOID_MAX_SPEED: f32 = 4.0;
 const BOID_UPDATE_FREQ: f32 = 60.0;
-const MATERIAL_COUNT: usize = 12; // 3 primary + 3 secondary + 6 in-between
+
+const MATERIAL_COUNT_DEFAULT: usize = 12; // 3 primary + 3 secondary + 6 in-between
+static MATERIAL_COUNT: OnceLock<usize> = OnceLock::new();
 
 fn main() {
+    MATERIAL_COUNT.get_or_init(|| {
+        std::env::args()
+            .nth(1)
+            .map(|arg| arg.parse().unwrap_or(MATERIAL_COUNT_DEFAULT))
+            .unwrap_or(MATERIAL_COUNT_DEFAULT)
+    });
+
     App::new()
         .add_plugins((
             DefaultPlugins.set(WindowPlugin {
@@ -155,10 +164,13 @@ fn setup(
         .zip(Sequence::new(3))
         .zip(0..BOID_COUNT);
 
-    let materials_list = (0..MATERIAL_COUNT)
+    let material_count = *MATERIAL_COUNT.get().unwrap();
+    info!("Number of materials: {material_count}");
+
+    let materials_list = (0..material_count)
         .map(|i| {
             materials.add(Color::hsl(
-                360. * i as f32 / MATERIAL_COUNT as f32,
+                360. * i as f32 / material_count as f32,
                 1.0,
                 0.7,
             ))
@@ -190,7 +202,7 @@ fn setup(
         // `(mesh, material)` combinations, and group the boids with the same
         // combination in sequence
         let mesh = mesh.clone();
-        let material_idx = seq * MATERIAL_COUNT / BOID_COUNT;
+        let material_idx = seq * material_count / BOID_COUNT;
         let material = materials_list[material_idx].clone();
 
         // To avoid z-fighting, set a different z-height for each boid.
@@ -204,8 +216,8 @@ fn setup(
         // such that, once ordered by z-height, we get:
         //   [ 0,  1,  2,  3, .., 10, 11, 12, ..., 20, 21, 22, ..., X0, X1, X2, ... ]
         //   [m0, m1, m2, m3,..., m0, m1, m2, ..., m0, m1, m2, ..., m0, m1, m2, ... ]
-        const MAJOR_TICK: usize = BOID_COUNT / MATERIAL_COUNT; // the X in the comment above
-        let height_seq = (seq % MATERIAL_COUNT) * MAJOR_TICK + (seq / MATERIAL_COUNT);
+        let major_tick: usize = BOID_COUNT / material_count; // the X in the comment above
+        let height_seq = (seq % material_count) * major_tick + (seq / material_count);
         let transform =
             Transform::from_translation(spawn.extend(height_seq as f32 / BOID_COUNT as f32))
                 .with_scale(Vec3::splat(BOID_SIZE));
