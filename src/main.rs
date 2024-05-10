@@ -160,9 +160,19 @@ fn setup(
     let mut rng = rand::thread_rng();
 
     // Halton sequence for Boid spawns
-    let seq = halton::Sequence::new(2)
+    //
+    // While the distribution of points looks random, the order in which they
+    // are created is anything but. In particular, it looks really bad when
+    // assigning the right number of materials in sequence. With 12 materials,
+    // this creates a grid of 4x3 where each cell is a single color.
+    // So keep  the Halton coordinates so we still get a fairly uniform
+    // distribution, but shuffle them so we don't use them in a predictable
+    // order.
+    let mut seq = halton::Sequence::new(2)
         .zip(Sequence::new(3))
-        .zip(0..BOID_COUNT);
+        .take(BOID_COUNT)
+        .collect::<Vec<_>>();
+    seq.shuffle(&mut rng);
 
     let material_count = *MATERIAL_COUNT.get().unwrap();
     info!("Number of materials: {material_count}");
@@ -176,51 +186,41 @@ fn setup(
             ))
         })
         .collect::<Vec<_>>();
-    let mesh = Mesh2dHandle(
-        meshes.add(
-            Mesh::new(
-                PrimitiveTopology::TriangleList,
-                RenderAssetUsages::default(),
-            )
-            .with_inserted_attribute(
-                Mesh::ATTRIBUTE_POSITION,
-                vec![
-                    [-0.5, 0.5, 0.0],
-                    [1.0, 0.0, 0.0],
-                    [-0.5, -0.5, 0.0],
-                    [0.0, 0.0, 0.0],
-                ],
-            )
-            .with_inserted_indices(Indices::U32(vec![1, 3, 0, 1, 2, 3])),
-        ),
+    let mesh = meshes.add(
+        Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        )
+        .with_inserted_attribute(
+            Mesh::ATTRIBUTE_POSITION,
+            vec![
+                [-0.5, 0.5, 0.0],
+                [1.0, 0.0, 0.0],
+                [-0.5, -0.5, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+        )
+        .with_inserted_indices(Indices::U32(vec![1, 3, 0, 1, 2, 3])),
     );
 
-    for ((x, y), seq) in seq {
+    for (seq, (x, y)) in seq.into_iter().enumerate() {
         let spawn = Vec2::new(x as f32, y as f32) * bounds.0 - bounds.0 / 2.0;
 
-        // For efficient auto-batching, we must have a limited number of
-        // `(mesh, material)` combinations, and group the boids with the same
-        // combination in sequence
+        // Looks like the most efficient batching is to use the materials in
+        // sequence.
+        // Other tests done:
+        // - use the material in group (material_idx = seq * material_count / BOID_COUNT)
+        //   but that uses "material_count^2" batches
+        // - use a random material (material_idx = rng.gen_range(0..material_count))
+        //   but, while the FPS is virtually unchanged, uses batches of 1 or 2
+        //   instances.
+        // see https://github.com/bevyengine/bevy/discussions/13325 for more details
         let mesh = mesh.clone();
-        let material_idx = seq * material_count / BOID_COUNT;
+        let material_idx = seq % material_count;
         let material = materials_list[material_idx].clone();
 
-        // To avoid z-fighting, set a different z-height for each boid.
-        // But we also need to avoid all the boids with the same material to
-        // be at the same z-height.
-        // So spread the height such that we get in spawn order (and using
-        // 10 materials to simplify the example)
-        //   [ 0, 10, 20, ..., X0,  1, 11, 21, ..., X1,  2, 12, 22, ..., X2,  3, ...]
-        // with materials:
-        //   [m0, m0, m0, ..., m0, m1, m1, m1, ..., m1, m2, m2, m2, ..., m2, m3, ...]
-        // such that, once ordered by z-height, we get:
-        //   [ 0,  1,  2,  3, .., 10, 11, 12, ..., 20, 21, 22, ..., X0, X1, X2, ... ]
-        //   [m0, m1, m2, m3,..., m0, m1, m2, ..., m0, m1, m2, ..., m0, m1, m2, ... ]
-        let major_tick: usize = BOID_COUNT / material_count; // the X in the comment above
-        let height_seq = (seq % material_count) * major_tick + (seq / material_count);
-        let transform =
-            Transform::from_translation(spawn.extend(height_seq as f32 / BOID_COUNT as f32))
-                .with_scale(Vec3::splat(BOID_SIZE));
+        let transform = Transform::from_translation(spawn.extend(seq as f32 / BOID_COUNT as f32))
+            .with_scale(Vec3::splat(BOID_SIZE));
 
         let velocity = Velocity(Vec2::new(
             rng.gen_range(-1.0..1.0),
@@ -230,7 +230,7 @@ fn setup(
         commands.spawn((
             BoidBundle {
                 mesh: MaterialMesh2dBundle {
-                    mesh,
+                    mesh: Mesh2dHandle(mesh),
                     material,
                     transform,
                     ..default()
