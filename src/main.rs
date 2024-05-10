@@ -1,6 +1,5 @@
 use bevy::{
     core::TaskPoolThreadAssignmentPolicy,
-    math::Vec3Swizzles,
     prelude::*,
     render::{mesh::*, render_asset::RenderAssetUsages},
     sprite::{MaterialMesh2dBundle, Mesh2dHandle},
@@ -35,6 +34,7 @@ const BOID_MOUSE_CHASE_FACTOR: f32 = 0.0005;
 const BOID_MIN_SPEED: f32 = 2.0;
 const BOID_MAX_SPEED: f32 = 4.0;
 const BOID_UPDATE_FREQ: f32 = 60.0;
+const MATERIAL_COUNT: usize = 12; // 3 primary + 3 secondary + 6 in-between
 
 fn main() {
     App::new()
@@ -155,13 +155,60 @@ fn setup(
         .zip(Sequence::new(3))
         .zip(0..BOID_COUNT);
 
-    for ((x, y), z) in seq {
+    let materials_list = (0..MATERIAL_COUNT)
+        .map(|i| {
+            materials.add(Color::hsl(
+                360. * i as f32 / MATERIAL_COUNT as f32,
+                1.0,
+                0.7,
+            ))
+        })
+        .collect::<Vec<_>>();
+    let mesh = Mesh2dHandle(
+        meshes.add(
+            Mesh::new(
+                PrimitiveTopology::TriangleList,
+                RenderAssetUsages::default(),
+            )
+            .with_inserted_attribute(
+                Mesh::ATTRIBUTE_POSITION,
+                vec![
+                    [-0.5, 0.5, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [-0.5, -0.5, 0.0],
+                    [0.0, 0.0, 0.0],
+                ],
+            )
+            .with_inserted_indices(Indices::U32(vec![1, 3, 0, 1, 2, 3])),
+        ),
+    );
+
+    for ((x, y), seq) in seq {
         let spawn = Vec2::new(x as f32, y as f32) * bounds.0 - bounds.0 / 2.0;
 
-        let mut transform = Transform::from_translation(spawn.extend(z as f32 / BOID_COUNT as f32))
-            .with_scale(Vec3::splat(BOID_SIZE));
+        // For efficient auto-batching, we must have a limited number of
+        // `(mesh, material)` combinations, and group the boids with the same
+        // combination in sequence
+        let mesh = mesh.clone();
+        let material_idx = seq * MATERIAL_COUNT / BOID_COUNT;
+        let material = materials_list[material_idx].clone();
 
-        transform.rotate_z(0.0);
+        // To avoid z-fighting, set a different z-height for each boid.
+        // But we also need to avoid all the boids with the same material to
+        // be at the same z-height.
+        // So spread the height such that we get in spawn order (and using
+        // 10 materials to simplify the example)
+        //   [ 0, 10, 20, ..., X0,  1, 11, 21, ..., X1,  2, 12, 22, ..., X2,  3, ...]
+        // with materials:
+        //   [m0, m0, m0, ..., m0, m1, m1, m1, ..., m1, m2, m2, m2, ..., m2, m3, ...]
+        // such that, once ordered by z-height, we get:
+        //   [ 0,  1,  2,  3, .., 10, 11, 12, ..., 20, 21, 22, ..., X0, X1, X2, ... ]
+        //   [m0, m1, m2, m3,..., m0, m1, m2, ..., m0, m1, m2, ..., m0, m1, m2, ... ]
+        const MAJOR_TICK: usize = BOID_COUNT / MATERIAL_COUNT; // the X in the comment above
+        let height_seq = (seq % MATERIAL_COUNT) * MAJOR_TICK + (seq / MATERIAL_COUNT);
+        let transform =
+            Transform::from_translation(spawn.extend(height_seq as f32 / BOID_COUNT as f32))
+                .with_scale(Vec3::splat(BOID_SIZE));
 
         let velocity = Velocity(Vec2::new(
             rng.gen_range(-1.0..1.0),
@@ -171,28 +218,8 @@ fn setup(
         commands.spawn((
             BoidBundle {
                 mesh: MaterialMesh2dBundle {
-                    mesh: Mesh2dHandle(
-                        meshes.add(
-                            Mesh::new(
-                                PrimitiveTopology::TriangleList,
-                                RenderAssetUsages::default(),
-                            )
-                            .with_inserted_attribute(
-                                Mesh::ATTRIBUTE_POSITION,
-                                vec![
-                                    [-0.5, 0.5, 0.0],
-                                    [1.0, 0.0, 0.0],
-                                    [-0.5, -0.5, 0.0],
-                                    [0.0, 0.0, 0.0],
-                                ],
-                            )
-                            .with_inserted_indices(Indices::U32(vec![1, 3, 0, 1, 2, 3])),
-                        ),
-                    ),
-                    material: materials.add(
-                        // Random color for each boid
-                        Color::hsl(360. * rng.gen::<f32>(), rng.gen(), 0.7),
-                    ),
+                    mesh,
+                    material,
                     transform,
                     ..default()
                 },
