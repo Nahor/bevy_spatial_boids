@@ -15,7 +15,8 @@
         "cmpgt",
         "cmplt",
         "hashbrown",
-        "length_recip"
+        "length_recip",
+        "signum"
     ],
     "import": []
 }

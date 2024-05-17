@@ -1,7 +1,7 @@
 use bevy::{
     core::TaskPoolThreadAssignmentPolicy,
     prelude::*,
-    render::{mesh::*, render_asset::RenderAssetUsages},
+    render::{mesh::*, render_asset::RenderAssetUsages, view::NoFrustumCulling},
     sprite::{MaterialMesh2dBundle, Mesh2dHandle},
     tasks::{block_on, poll_once, AsyncComputeTaskPool, Task},
     time::Stopwatch,
@@ -29,7 +29,7 @@ const BOID_PROT_RANGE_SQ: f32 = BOID_PROT_RANGE * BOID_PROT_RANGE;
 const BOID_CENTER_FACTOR: f32 = 0.0005;
 const BOID_MATCHING_FACTOR: f32 = 0.05;
 const BOID_AVOID_FACTOR: f32 = 0.05;
-const BOID_TURN_FACTOR: f32 = 0.2;
+const BOID_TURN_FACTOR: f32 = 2000.0;
 const BOID_MOUSE_CHASE_FACTOR: f32 = 0.0005;
 const BOID_MIN_SPEED: f32 = 2.0;
 const BOID_MAX_SPEED: f32 = 4.0;
@@ -66,9 +66,9 @@ fn main() {
                     ..default()
                 },
             }),))
-        .insert_resource(Bounds(boid_bounds(WINDOW_BOUNDS)))
+        .insert_resource(boid_bounds(WINDOW_BOUNDS))
         .init_resource::<SpatialKiddo>()
-        .add_event::<DvEvent>()
+        .add_event::<DeltaVSyncEvent>()
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -78,7 +78,7 @@ fn main() {
                 // update_spatial - to handle previous update and free the async tasks
                 // velocity_system - then update the positions and velocities
                 // flocking_system - then start the next update if necessary
-                (update_spatial, velocity_system, flocking_system).chain(),
+                (update_spatial, sync_velocity, flocking_system).chain(),
             ),
         )
         .add_systems(Update, (draw_boid_gizmos, bevy::window::close_on_esc))
@@ -110,17 +110,20 @@ impl Default for BoidBundle {
 
 // Event for a change of velocity on some boid
 #[derive(Event)]
-struct DvEvent(Entity, Vec2);
+struct DeltaVSyncEvent(Entity, Vec2);
 
 #[derive(Resource, Debug)]
-struct Bounds(Vec2);
+struct Bounds {
+    size: Vec2,
+    margin: Vec2,
+}
 
 type BoidSpatialTree = KdMap<[f32; 2], u64>;
 
 #[derive(Resource)]
 struct SpatialKiddo {
     tree: Arc<RwLock<BoidSpatialTree>>,
-    task: Option<Task<Vec<DvEvent>>>,
+    task: Option<Task<Vec<DeltaVSyncEvent>>>,
     stopwatch: Stopwatch,
 }
 impl Default for SpatialKiddo {
@@ -133,12 +136,14 @@ impl Default for SpatialKiddo {
     }
 }
 
-fn boid_bounds(window_size: Vec2) -> Vec2 {
+fn boid_bounds(window_size: Vec2) -> Bounds {
     let f = |x: f32| x / (x + 1.0).ln();
-    Vec2::new(
+    let size = Vec2::new(
         window_size.x - f(window_size.x),
         window_size.y - f(window_size.y),
-    )
+    );
+    let margin = window_size - size;
+    Bounds { size, margin }
 }
 
 fn update_bounds(windows: Query<&Window, With<PrimaryWindow>>, mut bounds: ResMut<Bounds>) {
@@ -146,7 +151,7 @@ fn update_bounds(windows: Query<&Window, With<PrimaryWindow>>, mut bounds: ResMu
         return;
     };
 
-    bounds.0 = boid_bounds(Vec2::new(window.width(), window.height()));
+    *bounds = boid_bounds(Vec2::new(window.width(), window.height()));
 }
 
 fn setup(
@@ -204,7 +209,7 @@ fn setup(
     );
 
     for (seq, (x, y)) in seq.into_iter().enumerate() {
-        let spawn = Vec2::new(x as f32, y as f32) * bounds.0 - bounds.0 / 2.0;
+        let spawn = Vec2::new(x as f32, y as f32) * bounds.size - bounds.size / 2.0;
 
         // Looks like the most efficient batching is to use the materials in
         // sequence.
@@ -238,15 +243,18 @@ fn setup(
                 velocity,
             },
             SpatialEntity,
+            // Little will be culled, we'll lose more time computing it than
+            // sending that to the GPU
+            NoFrustumCulling,
         ));
     }
 }
 
 fn draw_boid_gizmos(mut gizmos: Gizmos, bounds: Res<Bounds>) {
-    gizmos.rect_2d(Vec2::ZERO, 0.0, bounds.0, Color::GRAY);
+    gizmos.rect_2d(Vec2::ZERO, 0.0, bounds.size, Color::GRAY);
 }
 
-fn flocking_dv(
+fn flocking_delta_v(
     idx: usize,
     kdtree: &Arc<RwLock<BoidSpatialTree>>,
     boids: &Arc<HashMap<Entity, Velocity>>,
@@ -322,6 +330,8 @@ fn flocking_dv(
         dv += to_cursor * BOID_MOUSE_CHASE_FACTOR;
     }
 
+    // Use delta-v instead of directly computing the velocity because
+    // velocity may have changed while we were computing (e.g. window bounds)
     Some((boid, dv))
 }
 
@@ -385,16 +395,17 @@ fn flocking_system(
             let kdtree = Arc::clone(&spatial.tree);
 
             pool.spawn(async move {
-                let mut dv_batch: Vec<DvEvent> = vec![];
+                let mut velocity_sync_batch: Vec<DeltaVSyncEvent> = vec![];
 
                 for idx in chunk {
-                    let Some((boid, dv)) = flocking_dv(idx, &kdtree, &boids, cursor) else {
+                    let Some((boid, delta_v)) = flocking_delta_v(idx, &kdtree, &boids, cursor)
+                    else {
                         continue;
                     };
-                    dv_batch.push(DvEvent(boid, dv));
+                    velocity_sync_batch.push(DeltaVSyncEvent(boid, delta_v));
                 }
 
-                dv_batch
+                velocity_sync_batch
             })
         })
         .collect::<Vec<_>>();
@@ -409,49 +420,57 @@ fn flocking_system(
     }));
 }
 
-fn velocity_system(
-    mut events: EventReader<DvEvent>,
-    mut boids: Query<(&mut Velocity, &mut Transform)>,
-    bounds: Res<Bounds>,
-) {
-    let half_bound = bounds.0 / 2.;
-
-    for DvEvent(boid, dv) in events.read() {
-        let Ok((mut velocity, transform)) = boids.get_mut(*boid) else {
-            todo!()
+fn sync_velocity(mut events: EventReader<DeltaVSyncEvent>, mut boids: Query<&mut Velocity>) {
+    for DeltaVSyncEvent(boid, dv) in events.read() {
+        let Ok(mut velocity) = boids.get_mut(*boid) else {
+            continue;
         };
 
         velocity.0 += *dv;
-
-        let top_left_mask = transform.translation.xy().cmplt(-half_bound);
-        let bottom_right_mask = transform.translation.xy().cmpgt(half_bound);
-
-        let turn_factor = Vec2::select(top_left_mask, Vec2::splat(BOID_TURN_FACTOR), Vec2::ZERO)
-            - Vec2::select(bottom_right_mask, Vec2::splat(BOID_TURN_FACTOR), Vec2::ZERO);
-        velocity.0 = (velocity.0 + turn_factor).clamp_length(BOID_MIN_SPEED, BOID_MAX_SPEED);
     }
 }
 
-fn movement_system(mut query: Query<(&Velocity, &mut Transform)>, time: Res<Time>) {
-    for (velocity, mut transform) in query.iter_mut() {
-        if let Some(velocity_norm) = velocity.0.try_normalize() {
-            transform.rotation = Quat::from_rotation_arc_2d(Vec2::X, velocity_norm);
-        }
-        // The velocity is computed for the fixed update, so we need to scale
-        // the variable update to match, capped to avoid moving more than what
-        // the algorithm expected (low FPS)
-        // In other words, smooth the movement at high FPS without messing it
-        // at low FPS.
-        let time_delta = (time.delta_seconds() * BOID_UPDATE_FREQ).min(1.0);
-        transform.translation.x += velocity.0.x * time_delta;
-        transform.translation.y += velocity.0.y * time_delta;
-    }
+fn movement_system(
+    mut query: Query<(&mut Velocity, &mut Transform)>,
+    time: Res<Time>,
+    bounds: Res<Bounds>,
+) {
+    let half_bound = bounds.size / 2.;
+
+    query
+        .par_iter_mut()
+        .for_each(|(mut velocity, mut transform)| {
+            if let Some(velocity_norm) = velocity.0.try_normalize() {
+                transform.rotation = Quat::from_rotation_arc_2d(Vec2::X, velocity_norm);
+            }
+            // The velocity is computed for the fixed update, so we need to scale
+            // the variable update to match, capped to avoid moving more than what
+            // the algorithm expected (low FPS)
+            // In other words, smooth the movement at high FPS without messing it
+            // at low FPS.
+            let time_delta = (time.delta_seconds() * BOID_UPDATE_FREQ).min(1.0);
+            transform.translation.x += velocity.0.x * time_delta;
+            transform.translation.y += velocity.0.y * time_delta;
+
+            // How much the boid is out-of-bound (0 = within-bounds, != out-of-bounds)
+            // The value indicates how to move to get back within bounds
+            let top_left_oob = transform.translation.xy().cmplt(-half_bound);
+            let bottom_right_oob = transform.translation.xy().cmpgt(half_bound);
+            let oob = Vec2::select(top_left_oob, Vec2::ONE, Vec2::ZERO)
+                + Vec2::select(bottom_right_oob, -Vec2::ONE, Vec2::ZERO);
+
+            // Make the amount of correction dependent on the size of the margin
+            // such that that boids never stray far from the window limits
+            let turn_factor = oob * BOID_TURN_FACTOR / bounds.margin * time.delta_seconds();
+
+            velocity.0 = (velocity.0 + turn_factor).clamp_length(BOID_MIN_SPEED, BOID_MAX_SPEED);
+        });
 }
 
 fn update_spatial(
     mut tree: ResMut<SpatialKiddo>,
     entities: Query<(Entity, &Transform), With<SpatialEntity>>,
-    mut dv_event_writer: EventWriter<DvEvent>,
+    mut dv_event_writer: EventWriter<DeltaVSyncEvent>,
     mut update: Local<(Timer, Duration, u32)>,
     time: Res<Time>,
 ) {
