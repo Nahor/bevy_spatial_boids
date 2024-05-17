@@ -50,7 +50,13 @@ fn main() {
 
     App::new()
         .add_plugins((
-            DefaultPlugins.set(WindowPlugin {
+            bevy::diagnostic::FrameTimeDiagnosticsPlugin,
+            bevy::diagnostic::EntityCountDiagnosticsPlugin,
+            bevy::diagnostic::SystemInformationDiagnosticsPlugin,
+            bevy::diagnostic::LogDiagnosticsPlugin::default(),
+        ))
+        .add_plugins((DefaultPlugins
+            .set(WindowPlugin {
                 primary_window: Some(Window {
                     resolution: (WINDOW_BOUNDS.x, WINDOW_BOUNDS.y).into(),
                     ..default()
