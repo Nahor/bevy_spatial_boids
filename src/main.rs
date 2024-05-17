@@ -17,8 +17,10 @@ use std::{
     time::Duration,
 };
 
-const WINDOW_BOUNDS: Vec2 = Vec2::new(400., 400.);
-const BOID_COUNT: usize = 500;
+const WINDOW_BOUNDS: Vec2 = Vec2::new(1500., 1000.);
+const BOID_COUNT: usize = 15000;
+// const WINDOW_BOUNDS: Vec2 = Vec2::new(400., 400.);
+// const BOID_COUNT: usize = 500;
 const BOID_SIZE: f32 = 5.;
 const BOID_VIS_RANGE: f32 = 40.;
 const BOID_VIS_COUNT: usize = 100;
